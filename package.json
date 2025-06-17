@@ -1,0 +1,14 @@
+{
+  "name": "unearthed-koreader",
+  "version": "1.5.1",
+  "description": "KOReader plugin for Unearthed",
+  "scripts": {
+    "build": "npm run clean && npm run zip-plugin",
+    "clean": "rimraf Unearthed.koplugin.zip",
+    "zip-plugin": "node scripts/zip-plugin.js"
+  },
+  "devDependencies": {
+    "rimraf": "^5.0.5",
+    "archiver": "^6.0.1"
+  }
+}
