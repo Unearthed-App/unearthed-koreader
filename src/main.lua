@@ -18,7 +18,11 @@ local Unearthed = WidgetContainer:extend{
         api_key = "",
         user_id = "",
         auto_sync = false,
+        auto_sync_local = true,
         last_sync_date = nil,
+        last_sync_local_date = nil,
+        local_url = "",
+        local_secret = "",
     },
 }
 
@@ -31,6 +35,7 @@ function Unearthed:init()
     self.ui.menu:registerToMainMenu(self)
     self:loadSettings()
     self:checkAutoSync()
+    self:checkAutoSyncLocal()
 end
 
 function Unearthed:loadSettings()
@@ -56,7 +61,7 @@ function Unearthed:saveSettings()
     end
 end
 
-function Unearthed:showSettings()
+function Unearthed:showGeneralSettings()
     local menu_items = {
         {
             text = _("Book location"),
@@ -90,6 +95,36 @@ function Unearthed:showSettings()
                 UIManager:show(input_dialog)
             end,
         },
+        {
+            text = _("Test book location"),
+            callback = function()
+                local location = self.settings.book_location
+                if lfs.attributes(location, "mode") == "directory" then
+                    UIManager:show(InfoMessage:new{
+                        text = _("Book location is valid: ") .. location,
+                    })
+                else
+                    UIManager:show(InfoMessage:new{
+                        text = _("Book location is not valid: ") .. location,
+                    })
+                end
+            end,
+        },
+    }
+    
+    local settings_menu = Menu:new{
+        title = _("Unearthed Settings"),
+        item_table = menu_items,
+        width = Screen:getWidth() * 0.8,
+        height = Screen:getHeight() * 0.8,
+    }
+    
+    UIManager:show(settings_menu)
+end
+
+
+function Unearthed:showSettings()
+    local menu_items = {
         {
             text = _("API Key"),
             callback = function()
@@ -156,31 +191,113 @@ function Unearthed:showSettings()
             end,
         },
         {
-            text = _("Test book location"),
-            callback = function()
-                local location = self.settings.book_location
-                if lfs.attributes(location, "mode") == "directory" then
-                    UIManager:show(InfoMessage:new{
-                        text = _("Book location is valid: ") .. location,
-                    })
-                else
-                    UIManager:show(InfoMessage:new{
-                        text = _("Book location is not valid: ") .. location,
-                    })
-                end
-            end,
-        },
-        {
             text = _("Auto sync"),
             callback = function()
                 local confirm_box = ConfirmBox:new{
-                    text = _("Enable automatic daily sync with Unearthed?\n\nWhen enabled, highlights will be sent to Unearthed once per day when the app is opened."),
+                    text = _("Enable automatic daily sync with Unearthed Online?\n\nWhen enabled, highlights will be sent to Unearthed Online once per day when the app is opened."),
                     ok_text = self.settings.auto_sync and _("Disable") or _("Enable"),
                     ok_callback = function()
                         self.settings.auto_sync = not self.settings.auto_sync
                         self:saveSettings()
                         UIManager:show(InfoMessage:new{
                             text = self.settings.auto_sync and 
+                                   _("Auto sync enabled") or 
+                                   _("Auto sync disabled"),
+                        })
+                    end,
+                }
+                UIManager:show(confirm_box)
+            end,
+        },
+    }
+    
+    local settings_menu = Menu:new{
+        title = _("Unearthed Settings"),
+        item_table = menu_items,
+        width = Screen:getWidth() * 0.8,
+        height = Screen:getHeight() * 0.8,
+    }
+    
+    UIManager:show(settings_menu)
+end
+
+function Unearthed:showLocalSettings()
+    local menu_items = {
+        {
+            text = _("Local URL"),
+            callback = function()
+                local input_dialog
+                input_dialog = InputDialog:new{
+                    title = _("Local URL - sometimes your computer's ip address can change, so please re-check the Unearthed Local app"),
+                    input = self.settings.local_url,
+                    buttons = {
+                        {
+                            {
+                                text = _("Cancel"),
+                                callback = function()
+                                    UIManager:close(input_dialog)
+                                end,
+                            },
+                            {
+                                text = _("Save"),
+                                callback = function()
+                                    self.settings.local_url = input_dialog:getInputText()
+                                    self:saveSettings()
+                                    UIManager:close(input_dialog)
+                                    UIManager:show(InfoMessage:new{
+                                        text = _("Local URL saved"),
+                                    })
+                                end,
+                            },
+                        },
+                    },
+                }
+                UIManager:show(input_dialog)
+            end,
+        },
+        {
+            text = _("Secret"),
+            callback = function()
+                local input_dialog
+                input_dialog = InputDialog:new{
+                    title = _("Secret - this can be anything, but it must match the secret in the Unearthed Local app"),
+                    input = self.settings.local_secret,
+                    buttons = {
+                        {
+                            {
+                                text = _("Cancel"),
+                                callback = function()
+                                    UIManager:close(input_dialog)
+                                end,
+                            },
+                            {
+                                text = _("Save"),
+                                callback = function()
+                                    self.settings.local_secret = input_dialog:getInputText()
+                                    self:saveSettings()
+                                    UIManager:close(input_dialog)
+                                    UIManager:show(InfoMessage:new{
+                                        text = _("Local Secret saved"),
+                                    })
+                                end,
+                            },
+                        },
+                    },
+                }
+                UIManager:show(input_dialog)
+            end,
+        },
+        {
+            text = _("Auto sync"),
+            callback = function()
+                local confirm_box = ConfirmBox:new{
+                    text = _("Enable automatic daily sync with Unearthed Local?\n\nWhen enabled, highlights will be sent to Unearthed Local once per day when the app is opened."),
+                    ok_text = self.settings.auto_sync_local and _("Disable") or _("Enable"),
+                    ok_callback = function()
+                        self.settings.auto_sync_local = not self.settings.auto_sync_local
+                        self:saveSettings()
+                        UIManager:show(InfoMessage:new{
+                            text = self.settings.auto_sync_local and 
                                    _("Auto sync enabled") or 
                                    _("Auto sync disabled"),
                         })
@@ -319,13 +436,8 @@ function Unearthed:exportHighlights()
                             location = annotation.pos0
                         end
                         
-                        -- Validate color
                         local color = annotation.color or "grey"
-                        local valid_colors = {grey = true, yellow = true, blue = true, pink = true, orange = true}
-                        if not valid_colors[color] then
-                            color = "grey"
-                        end
-                        
+
                         table.insert(highlights_json, {
                             title = book_title,
                             subtitle = subtitle,
@@ -552,13 +664,35 @@ function Unearthed:addToMainMenu(menu_items)
             {
                 text = _("Send Books"),
                 callback = function()
-                    self:sendToAPI()
+                    if self.settings.book_location and self.settings.book_location ~= "" then
+                        if self.settings.api_key and self.settings.api_key ~= "" and 
+                            self.settings.user_id and self.settings.user_id ~= "" then
+                            self:sendToAPI()
+                        end
+
+                        if self.settings.local_url and self.settings.local_url ~= "" and 
+                            self.settings.local_secret and self.settings.local_secret ~= "" then
+                            self:sendToAPILocal()
+                        end
+                    end
                 end,
             },
             {
-                text = _("Settings"),
+                text = _("General Settings"),
+                callback = function()
+                    self:showGeneralSettings()
+                end,
+            },
+            {
+                text = _("Online Settings"),
                 callback = function()
                     self:showSettings()
+                end,
+            },
+            {
+                text = _("Local Settings"),
+                callback = function()
+                    self:showLocalSettings()
                 end,
             },
         }
@@ -566,6 +700,26 @@ function Unearthed:addToMainMenu(menu_items)
 end
 
 function Unearthed:sendToAPI()
+
+    if not self.settings.book_location or self.settings.book_location == "" then
+        UIManager:show(InfoMessage:new{
+            text = "Book Location must be configured in settings before sending data.",
+        })
+        return
+    end
+    if not self.settings.api_key or self.settings.api_key == "" then
+        UIManager:show(InfoMessage:new{
+            text = "API Key must be configured in settings before sending data.",
+        })
+        return
+    end
+    if not self.settings.user_id or self.settings.user_id == "" then
+        UIManager:show(InfoMessage:new{
+            text = "User ID must be configured in settings before sending data.",
+        })
+        return
+    end
+
     local DataStorage = require("datastorage")
     local json = require("json")
     local http = require("socket.http")
@@ -678,15 +832,9 @@ function Unearthed:sendToAPI()
         
         -- Prepare the authorization header
         local auth_header = "Bearer " .. self.settings.api_key .. "~~~user_" .. self.settings.user_id
-        
-        -- Insert books first
-        -- UIManager:show(InfoMessage:new{
-        --     text = string.format("Sending %d books to Unearthed...", #books_to_insert),
-        -- })
-        
-        local books_response_body = {}
         local books_request_body = json.encode(books_to_insert)
-        
+        local books_response_body = {}
+
         local req_ok, req_result = pcall(function()
             local _, code = http.request{
                 url = "https://unearthed.app/api/public/books-insert-koreader",
@@ -699,7 +847,7 @@ function Unearthed:sendToAPI()
                 },
                 source = ltn12.source.string(books_request_body),
                 sink = ltn12.sink.table(books_response_body),
-                timeout = 15
+                timeout = 60
             }
             return code
         end)
@@ -710,7 +858,7 @@ function Unearthed:sendToAPI()
             })
             return
         end
-        
+                
         local status_code = req_result
         if status_code ~= 200 and status_code ~= 201 then
             local error_msg = table.concat(books_response_body)
@@ -784,6 +932,7 @@ function Unearthed:sendToAPI()
             for _, highlight in ipairs(book_data.highlights) do
                 if highlight.content and highlight.content ~= "" then
                     table.insert(quotes_to_insert, {
+                        sourceName = book_data.book.title,
                         sourceId = book_data.source_id,
                         content = highlight.content,
                         note = highlight.note or "",
@@ -796,7 +945,6 @@ function Unearthed:sendToAPI()
             if #quotes_to_insert > 0 then
                 local quotes_response_body = {}
                 local quotes_request_body = json.encode(quotes_to_insert)
-                
                 local quotes_ok, quotes_result = pcall(function()
                     local _, code = http.request{
                         url = "https://unearthed.app/api/public/quotes-insert-koreader",
@@ -809,11 +957,11 @@ function Unearthed:sendToAPI()
                         },
                         source = ltn12.source.string(quotes_request_body),
                         sink = ltn12.sink.table(quotes_response_body),
-                        timeout = 15
+                        timeout = 60
                     }
                     return code
                 end)
-                
+
                 if quotes_ok and (quotes_result == 200 or quotes_result == 201) then
                     success_count = success_count + 1
                 else
@@ -825,10 +973,11 @@ function Unearthed:sendToAPI()
             end
         end
         
+        
         -- Show final results
         local result_text
         if failed_count == 0 then
-            result_text = string.format("Successfully synced %d books with Unearthed.", success_count)
+            result_text = string.format("Successfully synced %d books with Unearthed Online.", success_count)
         else
             result_text = string.format("Sync completed with issues:\n%d books succeeded\n%d books failed\n\nErrors:\n%s", 
                 success_count, 
@@ -849,6 +998,304 @@ function Unearthed:sendToAPI()
     end
 end
 
+function Unearthed:sendToAPILocal()
+
+    if not self.settings.local_url or self.settings.local_url == "" then
+        UIManager:show(InfoMessage:new{
+            text = "Local URL must be configured in settings before sending data.",
+        })
+        return
+    end
+
+    if not self.settings.local_secret or self.settings.local_secret == "" then
+        UIManager:show(InfoMessage:new{
+            text = "Local Secret must be configured in settings before sending data.",
+        })
+        return
+    end
+
+    if not self.settings.book_location or self.settings.book_location == "" then
+        UIManager:show(InfoMessage:new{
+            text = "Book Location must be configured in settings before sending data.",
+        })
+        return
+    end
+
+    local DataStorage = require("datastorage")
+    local json = require("json")
+    local http = require("socket.http")
+    local ltn12 = require("ltn12")
+    
+    -- Wrap everything in pcall to prevent crashes
+    local ok, err = pcall(function()
+        -- First perform a highlight export
+        self:exportHighlights()
+
+        -- Get all JSON files from the unearthed folder
+        local unearthed_dir = DataStorage:getDataDir() .. "/unearthed"
+        if not lfs.attributes(unearthed_dir, "mode") then
+            UIManager:show(InfoMessage:new{
+                text = "No unearthed folder found. Please export highlights first.",
+            })
+            return
+        end
+        
+        local json_files = {}
+        local success, iter, dir_obj = pcall(lfs.dir, unearthed_dir)
+        if not success then
+            UIManager:show(InfoMessage:new{
+                text = "Error accessing unearthed directory: " .. unearthed_dir,
+            })
+            return
+        end
+        
+        for file in iter, dir_obj do
+            if file ~= "." and file ~= ".." and file:match("%.json$") then
+                table.insert(json_files, unearthed_dir .. "/" .. file)
+            end
+        end
+        
+        if #json_files == 0 then
+            UIManager:show(InfoMessage:new{
+                text = "No JSON files found in the unearthed folder. Please export highlights first.",
+            })
+            return
+        end
+        
+        -- Combine all JSON files and organize by book
+        local books_data = {}
+        for _, file_path in ipairs(json_files) do
+            local file = io.open(file_path, "r")
+            if file then
+                local content = file:read("*all")
+                file:close()
+                
+                local decode_ok, highlights = pcall(json.decode, content)
+                if decode_ok and highlights and type(highlights) == "table" and #highlights > 0 then
+                    -- Group highlights by book
+                    for _, highlight in ipairs(highlights) do
+                        if highlight and highlight.title then
+                            local book_key = highlight.title .. "|" .. (highlight.author or "")
+                            
+                            if not books_data[book_key] then
+                                books_data[book_key] = {
+                                    book = {
+                                        title = highlight.title,
+                                        subtitle = highlight.subtitle or "",
+                                        author = highlight.author or "",
+                                        imageUrl = "",
+                                        asin = highlight.asin or "",
+                                        origin = "KOREADER"
+                                    },
+                                    highlights = {}
+                                }
+                            end
+                            
+                            table.insert(books_data[book_key].highlights, {
+                                content = highlight.content or "",
+                                note = highlight.note or "",
+                                color = highlight.color or "grey",
+                                location = highlight.location or ""
+                            })
+                        end
+                    end
+                end
+            end
+        end
+        
+        -- Convert to array for processing
+        local books_array = {}
+        for _, data in pairs(books_data) do
+            table.insert(books_array, data)
+        end
+        
+        if #books_array == 0 then
+            UIManager:show(InfoMessage:new{
+                text = "No valid highlights found in JSON files.",
+            })
+            return
+        end
+        
+        -- First insert books to get source IDs
+        local books_to_insert = {}
+        for _, book_data in ipairs(books_array) do
+            table.insert(books_to_insert, book_data.book)
+        end
+
+        local auth_header = "Bearer " .. self.settings.local_secret
+        local books_request_body = json.encode(books_to_insert)
+        local books_response_body = {}
+
+        local req_ok, req_result = pcall(function()
+            local _, code = http.request{
+                url = self.settings.local_url .. "/api/books-insert",
+                method = "POST",
+                headers = {
+                    ["Content-Type"] = "application/json; charset=utf-8",
+                    ["Authorization"] = auth_header,
+                    ["Accept"] = "application/json",
+                    ["Content-Length"] = #books_request_body
+                },
+                source = ltn12.source.string(books_request_body),
+                sink = ltn12.sink.table(books_response_body),
+                timeout = 60
+            }
+            
+            return code
+        end)
+
+        if not req_ok then
+            UIManager:show(InfoMessage:new{
+                text = "Failed to send books to local API. Check 'Unearthed Local' settings. " .. tostring(req_result),
+            })
+            return
+        end
+                
+        local status_code = req_result
+        if status_code ~= 200 and status_code ~= 201 then
+            local error_msg = table.concat(books_response_body)
+            UIManager:show(InfoMessage:new{
+                text = "Error sending books to local API. Check 'Unearthed Local' settings. : " .. 
+                      tostring(status_code) .. "\n" .. 
+                      (error_msg ~= "" and error_msg or "No response body"),
+            })
+            return
+        end
+        -- Parse the response to get book IDs
+        local parse_ok, response_data = pcall(json.decode, table.concat(books_response_body))
+        if not parse_ok or not response_data then
+            UIManager:show(InfoMessage:new{
+                text = "Failed to parse API response for books. ",
+            })
+            return
+        end
+
+        -- Create a lookup table for source IDs by book title and author
+        local source_id_lookup = {}
+        if response_data.sources and type(response_data.sources) == "table" then
+            for _, source in ipairs(response_data.sources) do
+                if source.sourceId and source.title then
+                    local key = (source.title .. "|" .. (source.author or "")):lower()
+                    source_id_lookup[key] = source.sourceId
+                end
+            end
+        end
+        
+        -- Update books with source IDs
+        local updated_books = {}
+        for _, book_data in ipairs(books_array) do
+            local book_key = (book_data.book.title .. "|" .. book_data.book.author):lower()
+            local source_id = source_id_lookup[book_key]
+            
+            if source_id then
+                table.insert(updated_books, {
+                    book = book_data.book,
+                    highlights = book_data.highlights,
+                    source_id = source_id
+                })
+            else
+                -- If we couldn't find a source ID, log it but continue with other books
+                table.insert(error_messages, "No source ID found for book: " .. book_data.book.title)
+            end
+        end
+        
+
+    
+        if #updated_books == 0 then
+            UIManager:show(InfoMessage:new{
+                text = "No books were successfully registered with Unearthed.",
+            })
+            return
+        end
+        
+        -- Now send highlights for each book with the correct source ID
+        local success_count = 0
+        local failed_count = 0
+        local error_messages = {}
+        
+        for _, book_data in ipairs(updated_books) do
+            local quotes_to_insert = {}
+
+            for _, highlight in ipairs(book_data.highlights) do
+                if highlight.content and highlight.content ~= "" then
+                    table.insert(quotes_to_insert, {
+                        sourceName = book_data.book.title,
+                        sourceId = book_data.source_id,
+                        content = highlight.content,
+                        note = highlight.note or "",
+                        color = highlight.color or "grey",
+                        location = highlight.location or ""
+                    })
+                end
+            end
+            
+            if #quotes_to_insert > 0 then
+
+                local quotes_request_body = json.encode(quotes_to_insert)
+
+                
+                if self.settings.local_url and self.settings.local_url ~= "" then
+                    local quotes_response_body = {}
+                    local quotes_ok, quotes_result = pcall(function()
+                        local _, code, headers = http.request{
+                            url = self.settings.local_url .. "/api/quotes-insert",
+                            method = "POST",
+                            headers = {
+                                ["Content-Type"] = "application/json; charset=utf-8",
+                                ["Authorization"] = auth_header,
+                                ["Accept"] = "application/json",
+                                ["Content-Length"] = #quotes_request_body
+                            },
+                            source = ltn12.source.string(quotes_request_body),
+                            sink = ltn12.sink.table(quotes_response_body),
+                            timeout = 60
+                        }
+                        
+                        -- Try to parse the response body
+                        local response_body = table.concat(quotes_response_body)
+                        local response_data = {}
+                        local parse_ok, parsed = pcall(json.decode, response_body)
+                        if parse_ok and parsed then
+                            response_data = parsed
+                        end
+                        
+                        return code, response_data
+                    end)
+                    
+                    if quotes_ok then
+                        success_count = success_count + 1
+                    else
+                        failed_count = failed_count + 1
+                        table.insert(error_messages, string.format("Failed to send highlights for '%s': %s", 
+                            book_data.book.title, 
+                            quotes_result and tostring(quotes_result) or "Unknown error"))
+                    end
+                end
+            end
+        end
+
+        local result_text
+        if failed_count == 0 then
+            result_text = string.format("Successfully synced %d books with Unearthed Local.", success_count)
+        else
+            result_text = string.format("Local sync completed with issues:\n%d books succeeded\n%d books failed\n\nErrors:\n%s", 
+                success_count, 
+                failed_count,
+                table.concat(error_messages, "\n"))
+        end
+        
+        UIManager:show(InfoMessage:new{
+            text = result_text,
+        })
+    end)
+    
+    if not ok then
+        UIManager:show(InfoMessage:new{
+            text = "Error in sendToAPILocal: " .. tostring(err),
+        })
+    end
+end
+
 function Unearthed:checkAutoSync()
     if not self.settings.auto_sync then
         return
@@ -865,13 +1312,27 @@ function Unearthed:checkAutoSync()
             self.settings.last_sync_date = current_date
             self:saveSettings()
             
-            -- Show notification that sync is starting
-            -- UIManager:show(InfoMessage:new{
-            --     text = _("Auto sync with Unearthed starting..."),
-            -- })
-            
-            -- Call the sendToAPI function
             self:sendToAPI()
+        end)
+    end
+end
+
+function Unearthed:checkAutoSyncLocal()
+    if not self.settings.auto_sync_local then
+        return
+    end
+    
+    local current_date = os.date("%Y-%m-%d")
+    local last_sync = self.settings.last_sync_local_date
+    
+    -- Only sync if we haven't synced today
+    if not last_sync or last_sync ~= current_date then
+        -- Schedule the sync with a slight delay to not slow down app startup
+        UIManager:scheduleIn(5, function()
+            self.settings.last_sync_local_date = current_date
+            self:saveSettings()
+            
+            self:sendToAPILocal()
         end)
     end
 end

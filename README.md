@@ -41,7 +41,7 @@ So far, only tested with:
 5. Unzip the file into `koreader/plugins` folder, making sure that the parent folder still remains (e.g., `koreader/plugins/Unearthed.koplugin`)
 6. On your device, restart KOReader and then go to tools and see if 'Unearthed' is listed as a menu item. If it is not listed there, go to Tools → MoreTools → PluginManagement and make sure 'Unearthed' is enabled
 7. Open Tools → Unearthed → Settings and keep it open
-8. Select 'Book Location' and input the path to the folder that holds your books along with your books' metadata
+8. Select 'Book Location' and input the path to the folder that holds your books along with your books' metadata. This must be the absolute path. You can find it by navigating your device's file system from within the KOReader app. Then look at the top of the app under the word KOReader to see the actual path. Here's an example for an Android device `/storage/emulated/0/Books`
 9. Login to Unearthed.app, go to settings and create an API Key, name it whatever you like. Copy it immediately and paste it into **API Key** in the KOReader Unearthed plugin settings
 10. Login to Unearthed.app, go to settings (general) and press the copy button next to 'User ID' and paste it into **User ID** in the KOReader Unearthed plugin settings
 11. Exit settings, and go back into Tools → Unearthed → SendBooks and then wait
