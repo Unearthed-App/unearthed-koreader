@@ -17,10 +17,14 @@ local Unearthed = WidgetContainer:extend{
         book_location = "",
         api_key = "",
         user_id = "",
-        auto_sync = false,
-        auto_sync_local = true,
+        auto_sync_on_startup = false,
+        auto_sync_local_on_startup = true,
+        auto_sync_hourly = false,
+        auto_sync_local_hourly = false,
         last_sync_date = nil,
         last_sync_local_date = nil,
+        last_sync_hourly_time = nil,
+        last_sync_local_hourly_time = nil,
         local_url = "",
         local_secret = "",
     },
@@ -36,6 +40,7 @@ function Unearthed:init()
     self:loadSettings()
     self:checkAutoSync()
     self:checkAutoSyncLocal()
+    self:setupHourlySync()
 end
 
 function Unearthed:loadSettings()
@@ -46,6 +51,15 @@ function Unearthed:loadSettings()
             -- Merge stored settings with defaults
             for k, v in pairs(stored_settings) do
                 self.settings[k] = v
+            end
+            
+            if stored_settings.auto_sync ~= nil and self.settings.auto_sync_on_startup == nil then
+                self.settings.auto_sync_on_startup = stored_settings.auto_sync
+                self.settings.auto_sync = nil
+            end
+            if stored_settings.auto_sync_local ~= nil and self.settings.auto_sync_local_on_startup == nil then
+                self.settings.auto_sync_local_on_startup = stored_settings.auto_sync_local
+                self.settings.auto_sync_local = nil
             end
         end
     end
@@ -191,18 +205,40 @@ function Unearthed:showSettings()
             end,
         },
         {
-            text = _("Auto sync"),
+            text = _("Auto sync on startup"),
             callback = function()
                 local confirm_box = ConfirmBox:new{
-                    text = _("Enable automatic daily sync with Unearthed Online?\n\nWhen enabled, highlights will be sent to Unearthed Online once per day when the app is opened."),
-                    ok_text = self.settings.auto_sync and _("Disable") or _("Enable"),
+                    text = _("Enable automatic daily sync with Unearthed Online on startup?\n\nWhen enabled, highlights will be sent to Unearthed Online once per day when the app is opened."),
+                    ok_text = self.settings.auto_sync_on_startup and _("Disable") or _("Enable"),
                     ok_callback = function()
-                        self.settings.auto_sync = not self.settings.auto_sync
+                        self.settings.auto_sync_on_startup = not self.settings.auto_sync_on_startup
                         self:saveSettings()
                         UIManager:show(InfoMessage:new{
-                            text = self.settings.auto_sync and 
-                                   _("Auto sync enabled") or 
-                                   _("Auto sync disabled"),
+                            text = self.settings.auto_sync_on_startup and 
+                                   _("Auto sync on startup enabled") or 
+                                   _("Auto sync on startup disabled"),
+                        })
+                    end,
+                }
+                UIManager:show(confirm_box)
+            end,
+        },
+        {
+            text = _("Auto sync hourly"),
+            callback = function()
+                local confirm_box = ConfirmBox:new{
+                    text = _("Enable automatic hourly sync with Unearthed Online?\n\nWhen enabled, highlights will be sent to Unearthed Online once per hour while KOReader is running."),
+                    ok_text = self.settings.auto_sync_hourly and _("Disable") or _("Enable"),
+                    ok_callback = function()
+                        self.settings.auto_sync_hourly = not self.settings.auto_sync_hourly
+                        self:saveSettings()
+                        if self.settings.auto_sync_hourly then
+                            self:setupHourlySync()
+                        end
+                        UIManager:show(InfoMessage:new{
+                            text = self.settings.auto_sync_hourly and 
+                                   _("Auto sync hourly enabled") or 
+                                   _("Auto sync hourly disabled"),
                         })
                     end,
                 }
@@ -288,18 +324,40 @@ function Unearthed:showLocalSettings()
             end,
         },
         {
-            text = _("Auto sync"),
+            text = _("Auto sync on startup"),
             callback = function()
                 local confirm_box = ConfirmBox:new{
-                    text = _("Enable automatic daily sync with Unearthed Local?\n\nWhen enabled, highlights will be sent to Unearthed Local once per day when the app is opened."),
-                    ok_text = self.settings.auto_sync_local and _("Disable") or _("Enable"),
+                    text = _("Enable automatic daily sync with Unearthed Local on startup?\n\nWhen enabled, highlights will be sent to Unearthed Local once per day when the app is opened."),
+                    ok_text = self.settings.auto_sync_local_on_startup and _("Disable") or _("Enable"),
                     ok_callback = function()
-                        self.settings.auto_sync_local = not self.settings.auto_sync_local
+                        self.settings.auto_sync_local_on_startup = not self.settings.auto_sync_local_on_startup
                         self:saveSettings()
                         UIManager:show(InfoMessage:new{
-                            text = self.settings.auto_sync_local and 
-                                   _("Auto sync enabled") or 
-                                   _("Auto sync disabled"),
+                            text = self.settings.auto_sync_local_on_startup and 
+                                   _("Auto sync on startup enabled") or 
+                                   _("Auto sync on startup disabled"),
+                        })
+                    end,
+                }
+                UIManager:show(confirm_box)
+            end,
+        },
+        {
+            text = _("Auto sync hourly"),
+            callback = function()
+                local confirm_box = ConfirmBox:new{
+                    text = _("Enable automatic hourly sync with Unearthed Local?\n\nWhen enabled, highlights will be sent to Unearthed Local once per hour while KOReader is running."),
+                    ok_text = self.settings.auto_sync_local_hourly and _("Disable") or _("Enable"),
+                    ok_callback = function()
+                        self.settings.auto_sync_local_hourly = not self.settings.auto_sync_local_hourly
+                        self:saveSettings()
+                        if self.settings.auto_sync_local_hourly then
+                            self:setupHourlySync()
+                        end
+                        UIManager:show(InfoMessage:new{
+                            text = self.settings.auto_sync_local_hourly and 
+                                   _("Auto sync hourly enabled") or 
+                                   _("Auto sync hourly disabled"),
                         })
                     end,
                 }
@@ -317,6 +375,35 @@ function Unearthed:showLocalSettings()
     
     UIManager:show(settings_menu)
 end
+
+function Unearthed:sortHighlightsByLocation(highlights)
+    local function extractLocationNumber(location)
+        if not location or location == "" then
+            return 0
+        end
+        
+        location = tostring(location)
+        
+        local number = location:match("(%d+)")
+        local result = number and tonumber(number) or 0
+                
+        return result
+    end
+    
+    table.sort(highlights, function(a, b)
+        local loc_a = extractLocationNumber(a.location or "")
+        local loc_b = extractLocationNumber(b.location or "")
+        
+        if loc_a == loc_b then
+            return false
+        end
+        
+        return loc_a < loc_b
+    end)
+    
+    return highlights
+end
+
 
 function Unearthed:exportHighlights()
     local DocumentRegistry = require("document/documentregistry")
@@ -929,7 +1016,9 @@ function Unearthed:sendToAPI()
         for _, book_data in ipairs(updated_books) do
             local quotes_to_insert = {}
             
-            for _, highlight in ipairs(book_data.highlights) do
+            local sorted_highlights = self:sortHighlightsByLocation(book_data.highlights)
+            
+            for i, highlight in ipairs(sorted_highlights) do
                 if highlight.content and highlight.content ~= "" then
                     table.insert(quotes_to_insert, {
                         sourceName = book_data.book.title,
@@ -937,7 +1026,8 @@ function Unearthed:sendToAPI()
                         content = highlight.content,
                         note = highlight.note or "",
                         color = highlight.color or "grey",
-                        location = highlight.location or ""
+                        location = highlight.location or "",
+                        sequence = i
                     })
                 end
             end
@@ -1216,7 +1306,9 @@ function Unearthed:sendToAPILocal()
         for _, book_data in ipairs(updated_books) do
             local quotes_to_insert = {}
 
-            for _, highlight in ipairs(book_data.highlights) do
+            local sorted_highlights = self:sortHighlightsByLocation(book_data.highlights)
+
+            for i, highlight in ipairs(sorted_highlights) do
                 if highlight.content and highlight.content ~= "" then
                     table.insert(quotes_to_insert, {
                         sourceName = book_data.book.title,
@@ -1224,7 +1316,8 @@ function Unearthed:sendToAPILocal()
                         content = highlight.content,
                         note = highlight.note or "",
                         color = highlight.color or "grey",
-                        location = highlight.location or ""
+                        location = highlight.location or "",
+                        sequence = i
                     })
                 end
             end
@@ -1297,7 +1390,7 @@ function Unearthed:sendToAPILocal()
 end
 
 function Unearthed:checkAutoSync()
-    if not self.settings.auto_sync then
+    if not self.settings.auto_sync_on_startup then
         return
     end
     
@@ -1318,7 +1411,7 @@ function Unearthed:checkAutoSync()
 end
 
 function Unearthed:checkAutoSyncLocal()
-    if not self.settings.auto_sync_local then
+    if not self.settings.auto_sync_local_on_startup then
         return
     end
     
@@ -1335,6 +1428,48 @@ function Unearthed:checkAutoSyncLocal()
             self:sendToAPILocal()
         end)
     end
+end
+
+function Unearthed:setupHourlySync()
+    if self.hourly_sync_timer then
+        UIManager:unschedule(self.hourly_sync_timer)
+        self.hourly_sync_timer = nil
+    end
+    
+    if not self.settings.auto_sync_hourly and not self.settings.auto_sync_local_hourly then
+        return
+    end
+    
+    self.hourly_sync_timer = UIManager:scheduleIn(3600, function()
+        self:performHourlySync()
+    end)
+end
+
+function Unearthed:performHourlySync()
+    local current_time = os.time()
+    local current_hour = os.date("%Y-%m-%d-%H", current_time)
+    
+    if self.settings.auto_sync_hourly then
+        local last_sync_hour = self.settings.last_sync_hourly_time
+        if not last_sync_hour or last_sync_hour ~= current_hour then
+            self.settings.last_sync_hourly_time = current_hour
+            self:saveSettings()
+            self:sendToAPI()
+        end
+    end
+    
+    if self.settings.auto_sync_local_hourly then
+        local last_sync_hour = self.settings.last_sync_local_hourly_time
+        if not last_sync_hour or last_sync_hour ~= current_hour then
+            self.settings.last_sync_local_hourly_time = current_hour
+            self:saveSettings()
+            self:sendToAPILocal()
+        end
+    end
+    
+    self.hourly_sync_timer = UIManager:scheduleIn(3600, function()
+        self:performHourlySync()
+    end)
 end
 
 return Unearthed
