@@ -38,6 +38,7 @@ function Unearthed:init()
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
     self:loadSettings()
+    self:migrateLocalUrl()
     self:checkAutoSync()
     self:checkAutoSyncLocal()
     self:setupHourlySync()
@@ -72,6 +73,18 @@ function Unearthed:saveSettings()
         file:write("return ")
         file:write(require("dump")(self.settings))
         file:close()
+    end
+end
+
+function Unearthed:migrateLocalUrl()
+    local url = self.settings.local_url
+    if url and url:sub(1, 7) == "http://" then
+        self.settings.local_url = "https://" .. url:sub(8)
+        self:saveSettings()
+        UIManager:show(InfoMessage:new{
+            text = _("Unearthed: Local URL updated to HTTPS automatically (http → https).\nNo other changes needed."),
+            timeout = 4,
+        })
     end
 end
 
@@ -1113,9 +1126,9 @@ function Unearthed:sendToAPILocal()
 
     local DataStorage = require("datastorage")
     local json = require("json")
-    local http = require("socket.http")
+    local https = require("ssl.https")
     local ltn12 = require("ltn12")
-    
+
     -- Wrap everything in pcall to prevent crashes
     local ok, err = pcall(function()
         -- First perform a highlight export
@@ -1217,7 +1230,7 @@ function Unearthed:sendToAPILocal()
         local books_response_body = {}
 
         local req_ok, req_result = pcall(function()
-            local _, code = http.request{
+            local _, code = https.request{
                 url = self.settings.local_url .. "/api/books-insert",
                 method = "POST",
                 headers = {
@@ -1228,9 +1241,10 @@ function Unearthed:sendToAPILocal()
                 },
                 source = ltn12.source.string(books_request_body),
                 sink = ltn12.sink.table(books_response_body),
-                timeout = 60
+                timeout = 60,
+                verify = "none",
             }
-            
+
             return code
         end)
 
@@ -1330,7 +1344,7 @@ function Unearthed:sendToAPILocal()
                 if self.settings.local_url and self.settings.local_url ~= "" then
                     local quotes_response_body = {}
                     local quotes_ok, quotes_result = pcall(function()
-                        local _, code, headers = http.request{
+                        local _, code, headers = https.request{
                             url = self.settings.local_url .. "/api/quotes-insert",
                             method = "POST",
                             headers = {
@@ -1341,7 +1355,8 @@ function Unearthed:sendToAPILocal()
                             },
                             source = ltn12.source.string(quotes_request_body),
                             sink = ltn12.sink.table(quotes_response_body),
-                            timeout = 60
+                            timeout = 60,
+                            verify = "none",
                         }
                         
                         -- Try to parse the response body

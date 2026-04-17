@@ -1,6 +1,6 @@
 {
   "name": "unearthed-koreader",
-  "version": "1.5.6",
+  "version": "1.5.7",
   "description": "KOReader plugin for Unearthed",
   "scripts": {
     "build": "npm run clean && npm run zip-plugin",
