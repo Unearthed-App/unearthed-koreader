@@ -88,6 +88,80 @@ function Unearthed:migrateLocalUrl()
     end
 end
 
+function Unearthed:getLogPath()
+    local DataStorage = require("datastorage")
+    local dir = DataStorage:getDataDir() .. "/unearthed"
+    if not lfs.attributes(dir, "mode") then
+        pcall(lfs.mkdir, dir)
+    end
+    return dir .. "/unearthed.log"
+end
+
+function Unearthed:log(level, message)
+    pcall(function()
+        local path = self:getLogPath()
+        local attr = lfs.attributes(path)
+        if attr and attr.size and attr.size > 256 * 1024 then
+            local rotated = path .. ".old"
+            os.remove(rotated)
+            os.rename(path, rotated)
+        end
+        local f = io.open(path, "a")
+        if f then
+            f:write(string.format("[%s] [%s] %s\n",
+                os.date("%Y-%m-%d %H:%M:%S"),
+                tostring(level),
+                tostring(message)))
+            f:close()
+        end
+    end)
+end
+
+function Unearthed:redactSecret(s)
+    if not s or s == "" then return "(empty)" end
+    local len = #s
+    if len <= 4 then return string.rep("*", len) .. " (len=" .. len .. ")" end
+    return s:sub(1, 2) .. string.rep("*", len - 4) .. s:sub(-2) .. " (len=" .. len .. ")"
+end
+
+function Unearthed:truncate(s, n)
+    s = tostring(s or "")
+    if #s <= n then return s end
+    return s:sub(1, n) .. "...(+" .. (#s - n) .. " bytes)"
+end
+
+function Unearthed:clearLog()
+    local path = self:getLogPath()
+    pcall(os.remove, path)
+    pcall(os.remove, path .. ".old")
+    self:log("INFO", "Log cleared by user.")
+    UIManager:show(InfoMessage:new{
+        text = _("Unearthed log cleared."),
+    })
+end
+
+function Unearthed:viewLog()
+    local TextViewer = require("ui/widget/textviewer")
+    local path = self:getLogPath()
+    local content = ""
+    local f = io.open(path, "r")
+    if f then
+        content = f:read("*all") or ""
+        f:close()
+    end
+    if content == "" then
+        content = "(log empty)\n\nThe log fills the next time Send Books or an auto-sync runs.\n\nLog file: " .. path
+    elseif #content > 64 * 1024 then
+        content = "...(truncated to last 64 KB; older entries in unearthed.log.old)...\n\n"
+            .. content:sub(-64 * 1024)
+    end
+    UIManager:show(TextViewer:new{
+        title = _("Unearthed Log"),
+        text = content,
+        justified = false,
+    })
+end
+
 function Unearthed:showGeneralSettings()
     local menu_items = {
         {
@@ -795,25 +869,52 @@ function Unearthed:addToMainMenu(menu_items)
                     self:showLocalSettings()
                 end,
             },
+            {
+                text = _("View log"),
+                callback = function()
+                    self:viewLog()
+                end,
+            },
+            {
+                text = _("Clear log"),
+                callback = function()
+                    local confirm_box = ConfirmBox:new{
+                        text = _("Clear the Unearthed log?\n\nThis deletes unearthed.log and unearthed.log.old."),
+                        ok_text = _("Clear"),
+                        ok_callback = function()
+                            self:clearLog()
+                        end,
+                    }
+                    UIManager:show(confirm_box)
+                end,
+            },
         }
     }
 end
 
 function Unearthed:sendToAPI()
+    self:log("INFO", "===== sendToAPI (online): invoked =====")
+    self:log("INFO", string.format("config: api_key=%s  user_id=%s  book_location=%s",
+        self:redactSecret(self.settings.api_key),
+        self:redactSecret(self.settings.user_id),
+        tostring(self.settings.book_location or "(empty)")))
 
     if not self.settings.book_location or self.settings.book_location == "" then
+        self:log("ERROR", "Aborted: Book Location not configured.")
         UIManager:show(InfoMessage:new{
             text = "Book Location must be configured in settings before sending data.",
         })
         return
     end
     if not self.settings.api_key or self.settings.api_key == "" then
+        self:log("ERROR", "Aborted: API Key not configured.")
         UIManager:show(InfoMessage:new{
             text = "API Key must be configured in settings before sending data.",
         })
         return
     end
     if not self.settings.user_id or self.settings.user_id == "" then
+        self:log("ERROR", "Aborted: User ID not configured.")
         UIManager:show(InfoMessage:new{
             text = "User ID must be configured in settings before sending data.",
         })
@@ -934,10 +1035,15 @@ function Unearthed:sendToAPI()
         local auth_header = "Bearer " .. self.settings.api_key .. "~~~user_" .. self.settings.user_id
         local books_request_body = json.encode(books_to_insert)
         local books_response_body = {}
+        local online_books_url = "https://unearthed.app/api/public/books-insert-koreader"
 
+        self:log("INFO", string.format("POST %s  body=%d bytes  books=%d",
+            online_books_url, #books_request_body, #books_to_insert))
+
+        local online_t_start = os.time()
         local req_ok, req_result = pcall(function()
             local _, code = http.request{
-                url = "https://unearthed.app/api/public/books-insert-koreader",
+                url = online_books_url,
                 method = "POST",
                 headers = {
                     ["Content-Type"] = "application/json; charset=utf-8",
@@ -951,20 +1057,30 @@ function Unearthed:sendToAPI()
             }
             return code
         end)
-        
+        local online_elapsed = os.time() - online_t_start
+
         if not req_ok then
+            self:log("ERROR", string.format(
+                "online books-insert: pcall raised after %ds: %s",
+                online_elapsed, tostring(req_result)))
             UIManager:show(InfoMessage:new{
                 text = "Failed to send books to API: " .. tostring(req_result),
             })
             return
         end
-                
+
         local status_code = req_result
+        local online_resp_text = table.concat(books_response_body)
+        self:log("INFO", string.format(
+            "online books-insert: result=%s elapsed=%ds resp_bytes=%d resp=%s",
+            tostring(status_code), online_elapsed, #online_resp_text,
+            self:truncate(online_resp_text, 500)))
+
         if status_code ~= 200 and status_code ~= 201 then
-            local error_msg = table.concat(books_response_body)
+            local error_msg = online_resp_text
             UIManager:show(InfoMessage:new{
-                text = "Error sending books to API: " .. 
-                      tostring(status_code) .. "\n" .. 
+                text = "Error sending books to API: " ..
+                      tostring(status_code) .. "\n" ..
                       (error_msg ~= "" and error_msg or "No response body"),
             })
             return
@@ -1102,8 +1218,14 @@ function Unearthed:sendToAPI()
 end
 
 function Unearthed:sendToAPILocal()
+    self:log("INFO", "===== sendToAPILocal: invoked =====")
+    self:log("INFO", string.format("config: url=%s  secret=%s  book_location=%s",
+        tostring(self.settings.local_url or "(empty)"),
+        self:redactSecret(self.settings.local_secret),
+        tostring(self.settings.book_location or "(empty)")))
 
     if not self.settings.local_url or self.settings.local_url == "" then
+        self:log("ERROR", "Aborted: Local URL not configured.")
         UIManager:show(InfoMessage:new{
             text = "Local URL must be configured in settings before sending data.",
         })
@@ -1111,6 +1233,7 @@ function Unearthed:sendToAPILocal()
     end
 
     if not self.settings.local_secret or self.settings.local_secret == "" then
+        self:log("ERROR", "Aborted: Local Secret not configured.")
         UIManager:show(InfoMessage:new{
             text = "Local Secret must be configured in settings before sending data.",
         })
@@ -1118,10 +1241,25 @@ function Unearthed:sendToAPILocal()
     end
 
     if not self.settings.book_location or self.settings.book_location == "" then
+        self:log("ERROR", "Aborted: Book Location not configured.")
         UIManager:show(InfoMessage:new{
             text = "Book Location must be configured in settings before sending data.",
         })
         return
+    end
+
+    -- Warn if URL likely missing the Unearthed Local port (6543).
+    -- KOReader plugin force-upgrades http→https; the desktop app only listens
+    -- on 6543, so a URL without an explicit port resolves to 443 → timeout.
+    do
+        local url = self.settings.local_url
+        local stripped = url:gsub("^https?://", "")
+        local hostpart = stripped:match("^[^/]+") or ""
+        if not hostpart:find(":") then
+            self:log("WARN", "URL has no explicit port. Unearthed Local listens on 6543 — "
+                .. "if the URL points to the default 443 the connection will time out. "
+                .. "Expected form: https://<computer-ip>:6543")
+        end
     end
 
     local DataStorage = require("datastorage")
@@ -1137,28 +1275,33 @@ function Unearthed:sendToAPILocal()
         -- Get all JSON files from the unearthed folder
         local unearthed_dir = DataStorage:getDataDir() .. "/unearthed"
         if not lfs.attributes(unearthed_dir, "mode") then
+            self:log("ERROR", "No unearthed folder found at " .. unearthed_dir)
             UIManager:show(InfoMessage:new{
                 text = "No unearthed folder found. Please export highlights first.",
             })
             return
         end
-        
+
         local json_files = {}
         local success, iter, dir_obj = pcall(lfs.dir, unearthed_dir)
         if not success then
+            self:log("ERROR", "Could not list directory " .. unearthed_dir)
             UIManager:show(InfoMessage:new{
                 text = "Error accessing unearthed directory: " .. unearthed_dir,
             })
             return
         end
-        
+
         for file in iter, dir_obj do
             if file ~= "." and file ~= ".." and file:match("%.json$") then
                 table.insert(json_files, unearthed_dir .. "/" .. file)
             end
         end
-        
+
+        self:log("INFO", string.format("export: %d JSON files in %s", #json_files, unearthed_dir))
+
         if #json_files == 0 then
+            self:log("ERROR", "No JSON files found after export. Check book_location contains .sdr metadata.")
             UIManager:show(InfoMessage:new{
                 text = "No JSON files found in the unearthed folder. Please export highlights first.",
             })
@@ -1228,10 +1371,15 @@ function Unearthed:sendToAPILocal()
         local auth_header = "Bearer " .. self.settings.local_secret
         local books_request_body = json.encode(books_to_insert)
         local books_response_body = {}
+        local books_url = self.settings.local_url .. "/api/books-insert"
 
+        self:log("INFO", string.format("POST %s  body=%d bytes  books=%d",
+            books_url, #books_request_body, #books_to_insert))
+
+        local books_t_start = os.time()
         local req_ok, req_result = pcall(function()
             local _, code = https.request{
-                url = self.settings.local_url .. "/api/books-insert",
+                url = books_url,
                 method = "POST",
                 headers = {
                     ["Content-Type"] = "application/json; charset=utf-8",
@@ -1247,20 +1395,39 @@ function Unearthed:sendToAPILocal()
 
             return code
         end)
+        local books_elapsed = os.time() - books_t_start
 
         if not req_ok then
+            self:log("ERROR", string.format(
+                "books-insert: pcall raised after %ds: %s",
+                books_elapsed, tostring(req_result)))
             UIManager:show(InfoMessage:new{
                 text = "Failed to send books to local API. Check 'Unearthed Local' settings. " .. tostring(req_result),
             })
             return
         end
-                
+
         local status_code = req_result
+        local response_text = table.concat(books_response_body)
+        self:log("INFO", string.format(
+            "books-insert: result=%s elapsed=%ds resp_bytes=%d resp=%s",
+            tostring(status_code), books_elapsed, #response_text,
+            self:truncate(response_text, 500)))
+
+        if status_code == nil or type(status_code) == "string" then
+            -- luasocket returns (nil, "timeout"|"closed"|...) on transport error;
+            -- after pcall the second value lands in status_code.
+            self:log("ERROR", string.format(
+                "books-insert: transport error '%s'. Likely causes: wrong URL/port, "
+                .. "Windows Firewall blocking inbound 6543, PC LAN IP changed, "
+                .. "device on different Wi-Fi/VLAN.", tostring(status_code)))
+        end
+
         if status_code ~= 200 and status_code ~= 201 then
-            local error_msg = table.concat(books_response_body)
+            local error_msg = response_text
             UIManager:show(InfoMessage:new{
-                text = "Error sending books to local API. Check 'Unearthed Local' settings. : " .. 
-                      tostring(status_code) .. "\n" .. 
+                text = "Error sending books to local API. Check 'Unearthed Local' settings. : " ..
+                      tostring(status_code) .. "\n" ..
                       (error_msg ~= "" and error_msg or "No response body"),
             })
             return
@@ -1268,6 +1435,8 @@ function Unearthed:sendToAPILocal()
         -- Parse the response to get book IDs
         local parse_ok, response_data = pcall(json.decode, table.concat(books_response_body))
         if not parse_ok or not response_data then
+            self:log("ERROR", "books-insert: failed to parse JSON response: "
+                .. self:truncate(table.concat(books_response_body), 500))
             UIManager:show(InfoMessage:new{
                 text = "Failed to parse API response for books. ",
             })
@@ -1284,13 +1453,21 @@ function Unearthed:sendToAPILocal()
                 end
             end
         end
-        
+
+        -- Per-book counters declared up front so source-id matching can also
+        -- record into error_messages (it used to write to a not-yet-declared
+        -- local, which would error in pcall and silently swallow the rest of
+        -- the sync — invisible to the user without these new logs).
+        local success_count = 0
+        local failed_count = 0
+        local error_messages = {}
+
         -- Update books with source IDs
         local updated_books = {}
         for _, book_data in ipairs(books_array) do
             local book_key = (book_data.book.title .. "|" .. book_data.book.author):lower()
             local source_id = source_id_lookup[book_key]
-            
+
             if source_id then
                 table.insert(updated_books, {
                     book = book_data.book,
@@ -1298,24 +1475,21 @@ function Unearthed:sendToAPILocal()
                     source_id = source_id
                 })
             else
-                -- If we couldn't find a source ID, log it but continue with other books
+                self:log("WARN", "No source ID returned for book: " .. tostring(book_data.book.title))
                 table.insert(error_messages, "No source ID found for book: " .. book_data.book.title)
             end
         end
-        
 
-    
+        self:log("INFO", string.format("matched %d/%d books to server source IDs",
+            #updated_books, #books_array))
+
         if #updated_books == 0 then
+            self:log("ERROR", "No books matched a server source ID; aborting quotes upload.")
             UIManager:show(InfoMessage:new{
                 text = "No books were successfully registered with Unearthed.",
             })
             return
         end
-        
-        -- Now send highlights for each book with the correct source ID
-        local success_count = 0
-        local failed_count = 0
-        local error_messages = {}
         
         for _, book_data in ipairs(updated_books) do
             local quotes_to_insert = {}
@@ -1340,12 +1514,18 @@ function Unearthed:sendToAPILocal()
 
                 local quotes_request_body = json.encode(quotes_to_insert)
 
-                
                 if self.settings.local_url and self.settings.local_url ~= "" then
+                    local quotes_url = self.settings.local_url .. "/api/quotes-insert"
+                    self:log("INFO", string.format(
+                        "POST %s  body=%d bytes  quotes=%d  book='%s'",
+                        quotes_url, #quotes_request_body, #quotes_to_insert,
+                        tostring(book_data.book.title)))
+
                     local quotes_response_body = {}
+                    local quotes_t_start = os.time()
                     local quotes_ok, quotes_result = pcall(function()
                         local _, code, headers = https.request{
-                            url = self.settings.local_url .. "/api/quotes-insert",
+                            url = quotes_url,
                             method = "POST",
                             headers = {
                                 ["Content-Type"] = "application/json; charset=utf-8",
@@ -1358,24 +1538,24 @@ function Unearthed:sendToAPILocal()
                             timeout = 60,
                             verify = "none",
                         }
-                        
-                        -- Try to parse the response body
-                        local response_body = table.concat(quotes_response_body)
-                        local response_data = {}
-                        local parse_ok, parsed = pcall(json.decode, response_body)
-                        if parse_ok and parsed then
-                            response_data = parsed
-                        end
-                        
-                        return code, response_data
+
+                        return code
                     end)
-                    
-                    if quotes_ok then
+                    local quotes_elapsed = os.time() - quotes_t_start
+                    local quotes_resp_text = table.concat(quotes_response_body)
+
+                    self:log("INFO", string.format(
+                        "quotes-insert: book='%s' result=%s elapsed=%ds resp_bytes=%d resp=%s",
+                        tostring(book_data.book.title), tostring(quotes_result),
+                        quotes_elapsed, #quotes_resp_text,
+                        self:truncate(quotes_resp_text, 300)))
+
+                    if quotes_ok and (quotes_result == 200 or quotes_result == 201) then
                         success_count = success_count + 1
                     else
                         failed_count = failed_count + 1
-                        table.insert(error_messages, string.format("Failed to send highlights for '%s': %s", 
-                            book_data.book.title, 
+                        table.insert(error_messages, string.format("Failed to send highlights for '%s': %s",
+                            book_data.book.title,
                             quotes_result and tostring(quotes_result) or "Unknown error"))
                     end
                 end
@@ -1386,18 +1566,22 @@ function Unearthed:sendToAPILocal()
         if failed_count == 0 then
             result_text = string.format("Successfully synced %d books with Unearthed Local.", success_count)
         else
-            result_text = string.format("Local sync completed with issues:\n%d books succeeded\n%d books failed\n\nErrors:\n%s", 
-                success_count, 
+            result_text = string.format("Local sync completed with issues:\n%d books succeeded\n%d books failed\n\nErrors:\n%s",
+                success_count,
                 failed_count,
                 table.concat(error_messages, "\n"))
         end
-        
+
+        self:log("INFO", string.format("sendToAPILocal: done. success=%d failed=%d",
+            success_count, failed_count))
+
         UIManager:show(InfoMessage:new{
             text = result_text,
         })
     end)
-    
+
     if not ok then
+        self:log("ERROR", "sendToAPILocal: pcall raised: " .. tostring(err))
         UIManager:show(InfoMessage:new{
             text = "Error in sendToAPILocal: " .. tostring(err),
         })
